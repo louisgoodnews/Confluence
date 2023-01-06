@@ -1,0 +1,164 @@
+
+/*
+  MADE BY LOUIS GOODNEWS
+
+  This is an uncomplete migratorscript from Notion to Confluence. In future this code should be able to bulk copy from Notion to a given Confluence space.
+*/
+
+import org.apache.http.util.EntityUtils;
+import org.apache.log4j.Level;
+import org.apache.http.entity.StringEntity
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpUriRequest;
+import org.apache.log4j.Logger;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.client.methods.HttpPut;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.HttpResponse;
+import org.apache.http.client.HttpClient;
+import groovy.json.JsonSlurper;
+import java.util.Base64.Encoder;
+
+class CONSTANTS{
+	
+	//PARAMETER
+	static final String VER_NOTION = "";
+	static final String NOTION_BASEURL = "${VER_NOTION}";
+	static final String AUTHORIZATION_NOTION = "";
+	
+	static final String BASEURL_CONFLUENCE = "";
+	static final String AUTHORIZATION_CONFLUENCE = "";
+}
+
+final Boolean doLog = true;
+String requestUrl;
+String requestMethod;
+String currentRestEndpoint;
+
+Logger logger = Logger.getLogger("com.louis.console.NotionMigrator");
+logger.setLevel(LEVEL.DEBUG);
+
+String notionAuthorizationString = "Bearer ${encodeToBase64(CONSTANTS.AUTHORIZATION_NOTION)}";
+String confluenceAuthorizationString = "Basic ${encodeToBase64(CONSTANTS.AUTHORIZATION_CONFLUENCE)}";
+
+LinkedHashMap<String, String> requestHeadersMap = new LinkedHashMap();
+requestHeadersMap.put("Accept", "application/json");
+requestHeadersMap.put("Content-Type", "application/json");
+requestHeadersMap.put("Notion-Version", CONSTANTS.VER_NOTION);
+
+requestUrl = "${CONSTANTS.NOTION_BASEURL}";
+requestMethod = "GET";
+
+LinkedHashMap<String, Object> getPageRequest = executeSynchronousWebRequest (String requestAuthorization, String requestUrl, String requestMethod, LinkedHashMap<String, String> requestHeadersMap, LinkedHashMap<String, Object> requestBodyMap, Boolean doLog);
+assert getPageRequest? logger.info("Got a response from Notion - Script execution will continued.") : return "Got no response from Notion - script execution aborted!";
+
+currentRestEndpoint = "";
+requestUrl = "${BASEURL_CONFLUENCE}/${currentRestEndpoint}";
+requestMethod = "POST";
+
+LinkedHashMap<String, Object> createPageRequest = executeSynchronousWebRequest (String requestAuthorization, String requestUrl, String requestMethod, LinkedHashMap<String, String> requestHeadersMap, LinkedHashMap<String, Object> requestBodyMap, Boolean doLog);
+assert createPageRequest.status.status.equalsIgnoreCase("OK") ? logger.info("Got a response from Confluence - Script execution will continued.") : return "Got no response from Confluence - script execution aborted!";
+
+return;
+
+/*
+	METHODS:
+*/
+public String encodeToBase64(String stringToEncode) {
+	
+  return Base64.getEncoder().encodeToString(stringToEncode.getBytes());
+}
+
+private LinkedHashMap<String, Object> executeSynchronousWebRequest (String requestAuthorization, String requestUrl, String requestMethod, LinkedHashMap<String, String> requestHeadersMap, LinkedHashMap<String, Object> requestBodyMap, Boolean doLog) {
+   
+    Logger logger = Logger.getLogger("de.louis.scriptrunner.console.methods.executeSynchronousWebRequest");
+    logger.setLevel(Level.DEBUG);
+    CloseableHttpClient clientObject = HttpClientBuilder.create().build();
+    CloseableHttpResponse responseObject;
+    HttpUriRequest getRequestObject;
+    HttpUriRequest postRequestObject;
+    HttpUriRequest putRequestObject;
+    LinkedHashMap<String, Object> result = new LinkedHashMap();
+    try {
+        if (requestMethod.equalsIgnoreCase("GET")) {
+   
+            getRequestObject = new HttpGet(requestUrl);
+            if (requestAuthorization) {
+                   
+                getRequestObject.setHeader("Authorization", requestAuthorization);
+            }
+            if (requestHeadersMap) {
+                   
+                requestHeadersMap.keySet().each { String requestHeaderKey ->
+   
+                    getRequestObject.setHeader(requestHeaderKey, requestHeadersMap.get(requestHeaderKey));
+                };
+            };
+        } else if (requestMethod.equalsIgnoreCase("POST")) {
+   
+            postRequestObject = new HttpPost(requestUrl);
+            if (requestAuthorization) {
+                   
+                postRequestObject.setHeader("Authorization", requestAuthorization);
+            }
+            if (requestHeadersMap) {
+                   
+                requestHeadersMap.keySet().each { String requestHeaderKey ->
+   
+                    postRequestObject.setHeader(requestHeaderKey, requestHeadersMap.get(requestHeaderKey));
+                };
+            };
+            if (requestBodyMap) {
+  
+                postRequestObject.setEntity(new StringEntity(requestBodyMap.toString()));
+            };
+        } else if (requestMethod.equalsIgnoreCase("PUT")) {
+                   
+            putRequestObject = new HttpPut(requestUrl);
+            if (requestAuthorization) {
+                   
+                putRequestObject.setHeader("Authorization", requestAuthorization);
+            }
+            if (requestHeadersMap) {
+                   
+                requestHeadersMap.keySet().each { String requestHeaderKey ->
+   
+                    putRequestObject.setHeader(requestHeaderKey, requestHeadersMap.get(requestHeaderKey));
+                };
+            };
+            if (requestBodyMap) {
+  
+                putRequestObject.setEntity(new StringEntity(requestBodyMap.toString()));
+            };
+        } else {
+   
+            doLog == true?:logger.error("No valid request method was provided - Method execution of 'executeSynchronousWebRequest' aborted!");
+            return;
+        };
+        if (getRequestObject) {
+   
+            responseObject = clientObject.execute(getRequestObject);
+        } else if (postRequestObject) {
+   
+            responseObject = clientObject.execute(postRequestObject);
+        } else {
+   
+            responseObject = clientObject.execute(putRequestObject);
+        }
+        Integer statusCode = responseObject.getStatusLine().getStatusCode();
+        result.put("status", ["statusCode": statusCode, "statusText":  org.apache.commons.httpclient.HttpStatus.getStatusText(statusCode)]);
+        if (responseObject.getEntity()){
+ 
+            result.put("body", new JsonSlurper().parseText(EntityUtils.toString(responseObject.getEntity())));
+        }
+    } catch (Exception e) {
+   
+        logger.error("Invoking of method 'executeSynchronousWebRequest' failed with exception: ${e}.");
+        return e.printStackTrace();
+    } finally {
+       
+        return result;
+    }
+}
