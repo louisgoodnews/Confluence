@@ -1,0 +1,182 @@
+#
+#   Reads the CSV from Script 1 and replaces the Viable States macros with Status macros
+#
+
+
+import requests
+import os
+import glob
+import pandas as pd
+import numpy as np
+import json
+import re
+import datetime
+
+# Confluence credentials and base URL
+# BASE_URL = 'http://localhost:8090/rest/api'
+# USERNAME = 'admin'
+# PASSWORD = 'admin'
+
+BASE_URL = ''
+USERNAME = ''
+PASSWORD = ''
+
+# Print the timestamp at the beginning of the script
+start_time = datetime.datetime.now()
+print("Script started at:", start_time)
+
+# Find the newest CSV file in the script folder
+script_folder = os.path.dirname(os.path.abspath(__file__))
+csv_files = glob.glob(os.path.join(script_folder, '*.csv'))
+newest_file = max(csv_files, key=os.path.getctime)
+
+# Read the CSV file
+df = pd.read_csv(newest_file)
+
+def replace_swapper_in_confluence(page_id):
+    # Step 1: Retrieve the current data of the page
+    page_url = f'{BASE_URL}/content/{page_id}?expand=body.storage,version'
+    response = requests.get(page_url, auth=(USERNAME, PASSWORD))
+    if response.status_code != 200:
+        print(f"Failed to retrieve page with ID: {page_id}")
+        return
+
+    page_data = response.json()
+    title = page_data['title']
+    current_version = page_data['version']['number']
+    content = page_data['body']['storage']['value']
+    new_version = current_version + 1
+    # print("#### Old page content ####")
+    # print(content)
+    # print()
+    
+    # Step 2: Check if the content has to be updated
+    update_content = replace_swapper_in_page_storage(content)
+    
+    if update_content == content:
+        print(f"No content update on page with ID: {page_id}")
+        return
+    
+    # Step 3: Create the JSON object for page update
+    update_data = {
+        "id": page_id,
+        "title": title,
+        "type": "page",
+        "version": {
+            "number": new_version
+        },
+        "body": {
+            "storage": {
+                "value": update_content,
+                "representation": "storage"
+            }
+        }
+    }
+    
+    # Step 4: Update the page with modified data
+    update_url = f'{BASE_URL}/content/{page_id}'
+    update_response = requests.put(update_url, auth=(USERNAME, PASSWORD), data=json.dumps(update_data), headers={'Content-Type': 'application/json'})
+
+    if update_response.status_code != 200:
+        print(f"Failed to update page with ID: {page_id}")
+        return
+
+    print("Page updated successfully.")
+
+def replace_swapper_in_page_storage(page_storage):
+    pattern = r'<ac:structured-macro ac:name="state-swapper-macro"[^>]*>[\s\S]*?<ac:parameter ac:name="state">[\s\S]*?<\/ac:structured-macro>'
+    macros = re.findall(pattern, page_storage, re.DOTALL)
+    if macros != None:
+        for macro in macros:
+            # print("#### Macro found ####")
+            # print(macro)
+            # print()
+            
+            # Extract the content inside <ac:plain-text-body>
+            pattern_plain_text_body = r'<ac:plain-text-body><!\[CDATA\[(.*?)\]\]></ac:plain-text-body>'
+            match_plain_text_body = re.search(pattern_plain_text_body, macro)
+            plain_text_body = match_plain_text_body.group(1) if match_plain_text_body else ""
+
+            # Extract the content inside the parameter <ac:parameter ac:name="state">
+            pattern_state_parameter = r'<ac:parameter ac:name="state">(.*?)<\/ac:parameter>'
+            match_state_parameter = re.search(pattern_state_parameter, macro)
+            state_content = match_state_parameter.group(1) if match_state_parameter else ""
+
+            # Split the content by ;
+            state_parts = state_content.split(';')
+
+            # Search for the part that contains variable A
+            matching_part = next((part for part in state_parts if plain_text_body in part), None)
+
+            # Extract default title and color if A or B is empty
+            default_title = ""
+            default_color = ""
+            title = ""
+            color = ""
+            label = ""
+            # print(f"Current plain_text_body: {plain_text_body}")
+            # print(f"Current matching_part: {matching_part}")
+
+            # Output the variables or default values
+            if plain_text_body and matching_part:
+                # Split the matching part by ,
+                parts = matching_part.split(',')
+
+                # Assign values to variables title, color, and label
+                title = parts[0].strip() if parts else ""
+                color = parts[1].strip() if len(parts) >= 2 else ""
+                label = parts[2].strip() if len(parts) >= 3 else ""
+                
+                # print("Title:", title)
+                # print("Color:", color)
+                # print("Label:", label)
+                
+                replace_macro = f'''<ac:structured-macro ac:name="status" ac:schema-version="1"><ac:parameter ac:name="title">{title}</ac:parameter><ac:parameter ac:name="colour">{color}</ac:parameter></ac:structured-macro>'''
+            else:
+                pattern_default_title = r'<ac:parameter ac:name="defaulttitle">(.*?)<\/ac:parameter>'
+                match_default_title = re.search(pattern_default_title, macro)
+                default_title = match_default_title.group(1) if match_default_title else ""
+
+                pattern_default_color = r'<ac:parameter ac:name="defaultcolor">(.*?)<\/ac:parameter>'
+                match_default_color = re.search(pattern_default_color, macro)
+                default_color = match_default_color.group(1) if match_default_color else ""
+                
+                # print("Title (Default):", default_title)
+                # print("Color (Default):", default_color)
+                
+                replace_macro = f'''<ac:structured-macro ac:name="status" ac:schema-version="1"><ac:parameter ac:name="title">{default_title}</ac:parameter><ac:parameter ac:name="colour">{default_color}</ac:parameter></ac:structured-macro>'''
+            # print(f"Replace with this macro: {replace_macro}")
+            
+            page_storage = page_storage.replace(macro, replace_macro)
+            # print("#### New page content ####")
+            # print(page_storage)
+            # print()
+    else:
+        print("#### No macro found ####")
+    return page_storage
+
+processed_page_ids = set()
+
+# Go through all columns
+for column in df.columns:
+    print(f"## Processing swapper configuration {column} ##")
+    for page_id in df[column][0:]:
+        if not pd.isna(page_id):
+            page_id = int(page_id)
+            
+            if page_id in processed_page_ids:
+                print(f"Page {page_id} has already been processed.")
+                continue
+
+            processed_page_ids.add(page_id)
+            
+            print(f"#### Processing page {page_id} ####")
+            replace_swapper_in_confluence(page_id)
+
+# Print the timestamp at the end of the script
+end_time = datetime.datetime.now()
+print("Script ended at:", end_time)
+
+# Calculate and print the duration
+duration = end_time - start_time
+print("Script duration:", duration)
