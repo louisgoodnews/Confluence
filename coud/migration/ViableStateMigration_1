@@ -1,0 +1,200 @@
+#
+#  Generates a CSV with all different configurations of Viable States and the pages they are present
+#
+
+
+import requests
+import regex as re
+import sys
+import csv
+import pandas as pd
+import numpy as np
+import datetime
+
+# Confluence credentials and base URL
+# BASE_URL = 'http://localhost:8090/rest/api'
+# USERNAME = 'admin'
+# PASSWORD = 'admin'
+
+BASE_URL = ''
+USERNAME = ''
+PASSWORD = ''
+
+# Interrupt the script after a defined amount of spaces
+interruptafterspaces = 0 # set to 0 to process all spaces
+
+# Print the timestamp at the beginning of the script
+start_time = datetime.datetime.now()
+print("Script started at:", start_time)
+
+# Search string
+SEARCH_STRING = 'ac:structured-macro'
+
+def get_confluence_space_keys():
+    url = f'{BASE_URL}/space'
+    headers = {
+        'Accept': 'application/json'
+    }
+    space_keys = []
+    
+    while url:
+        response = requests.get(url, auth=(USERNAME, PASSWORD), headers=headers)
+        response.raise_for_status()
+        
+        data = response.json()
+        for space in data['results']:
+            space_keys.append(space['key'])
+        
+        # Check if there are more results (pagination)
+        links = data['_links']
+        if 'next' in links:
+            next_url = links['next']
+            full_url = BASE_URL + next_url
+            full_url = full_url.replace('/rest/api/rest/api', '/rest/api')
+            url = full_url if next_url else None
+        else:
+            url = None
+    return space_keys
+
+# Function to fetch pages in a space
+def fetch_pages(start, limit):
+    url = f'{BASE_URL}/content'
+    params = {
+        'type': 'page',
+        'spaceKey': SPACE_KEY,
+        'start': start,
+        'limit': limit
+    }
+    response = requests.get(url, auth=(USERNAME, PASSWORD), params=params)
+    response.raise_for_status()
+    return response.json()
+
+# Function to search for a string in a page
+def search_string_in_page(page_id):
+    url = f'{BASE_URL}/content/{page_id}'
+    params = {
+        'expand': 'body.storage'
+    }
+    response = requests.get(url, auth=(USERNAME, PASSWORD), params=params)
+    response.raise_for_status()
+    return response.json()
+
+# Function to parse macros in the page content
+def parse_macros(page_content):
+    macros = []
+    if 'value' in page_content['body']['storage']:
+        value = page_content['body']['storage']['value']
+        macro_start = value.find('<ac:structured-macro')
+        while macro_start != -1:
+            macro_end = value.find('</ac:structured-macro>', macro_start)
+            if macro_end != -1:
+                macro = value[macro_start:macro_end]
+                macros.append(macro)
+            macro_start = value.find('<ac:structured-macro', macro_end)
+    return macros
+
+# Extract parameter content by ac:name
+def extract_parameter_name_content(macro, parameter_name):
+    pattern = f'<ac:parameter ac:name="{parameter_name}">(.*?)<\/ac:parameter>' # escapce the / in the closing tag!
+    matches = re.findall(pattern, macro, re.DOTALL)
+    if matches:
+        return matches[0].strip()
+    return 
+
+# Write value to the next empty index in a specific column of a DataFrame
+def write_to_next_empty_index(df, column_name, value):
+    if column_name in df.columns:
+        column_values = df[column_name]
+        next_index = column_values.last_valid_index() + 1 if len(column_values) > 0 else 0
+        df.at[next_index, column_name] = value
+    else:
+        df[column_name] = np.nan
+        df.at[0, column_name] = value
+
+# DataFrame for all unique state swapper configurations
+state_param_contents = pd.DataFrame()
+
+# Read all space keys
+print("---------------------------------------")
+print(f"Read all space keys:")
+print("---------------------------------------")
+SPACE_KEYS = get_confluence_space_keys()
+# SPACE_KEYS = ['DPRODI', "DMARI", "DMAR"]
+print(SPACE_KEYS)
+print(f"Number of spaces: {len(SPACE_KEYS)}")
+print()
+
+# Interrupt the script
+# sys.exit("Script interrupted by user")
+
+# Loop through all space keys
+count = 0
+
+for SPACE_KEY in SPACE_KEYS:
+    if interruptafterspaces > 0 and count >= interruptafterspaces:
+        break
+    print("---------------------------------------")
+    print(f"Processing Space Key: {SPACE_KEY} ({count+1} of {len(SPACE_KEYS)})")
+    print("---------------------------------------")
+
+    # Loop through all pages and search for the string
+    start = 0
+    amount = 400 # hard limit at 500
+    limit = 10000
+    total_results = limit + 1  # Initialize total results with a value greater than the limit
+
+    while start < total_results:
+        print(f"Start new batch from {start} to {start+amount}")
+        pages = fetch_pages(start, start+amount)
+        #total_results = pages['size']
+
+        for page in pages['results']:
+            page_id = page['id']
+            page_title = page['title']
+
+            # Search for the string in the current page
+            search_results = search_string_in_page(page_id)
+            if search_results['id'] == page_id:
+                page_content = search_results
+                macros = parse_macros(page_content)
+                if macros:
+                    # print(f"Macros found in page '{page_title}' (ID: {page_id})")
+                    for macro in macros:
+                        # print(f"Macro: {macro}")
+                        # Extract and print macro parameters
+                        state_param_content = extract_parameter_name_content(macro, 'state')
+                        if state_param_content:
+                            print(f"Content of parameter 'state' on page {page_title} (ID: {page_id}): {state_param_content}")
+                            write_to_next_empty_index(state_param_contents, state_param_content, page_id)
+
+        start += amount
+        # print(f"New start: {start}")
+    count += 1
+    
+# Print the DataFrame of state_param_contents
+# print("DataFrame of unique configurations:")
+# print(state_param_contents)
+# print()
+print(f"Number of unique configurations: {len(state_param_contents.columns)}")
+print(f"{state_param_contents.count()}")
+
+# Generate a timestamp for the filename
+timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+
+if (state_param_contents.count() > 0).any():
+    # Write state_param_contents to a CSV file
+    filename = f'{timestamp}_state_param_contents.csv'
+    state_param_contents.to_csv(filename, index=False)
+
+    print()
+    print(f'DataFrame written to {filename} successfully.')
+else:
+    print(f'0 unique configurations. Nothing to write.')
+
+# Print the timestamp at the end of the script
+end_time = datetime.datetime.now()
+print("Script ended at:", end_time)
+
+# Calculate and print the duration
+duration = end_time - start_time
+print("Script duration:", duration)
